@@ -20,7 +20,14 @@ from omg.datamodule.dataloader import OMGTorchDataset, OMGData
 from voronoi_weighted import VoronoiPhantomCellGenerator
 
 
-VoronoiGenerator = VoronoiPhantomCellGenerator(desired_atom_count=20, dist_eval="min")
+VoronoiGenerator = VoronoiPhantomCellGenerator(
+    desired_atom_count=20,
+    dist_eval="min",
+    # dist_eval="avg_x_min",
+    # num_min_distances=3,
+    epsilon=1e-3,
+    weight_distances=False,
+)
 
 
 def load_data():
@@ -35,6 +42,7 @@ def load_data():
 
     assert len(train_data) == 27136
     assert len(val_data) == 9047
+    assert len(test_data) == 9046
 
     train_dataset = OMGTorchDataset(
         dataset=train_data, convert_to_fractional=False, niggli=False
@@ -175,58 +183,73 @@ def plot_crystal_with_points(single_data, idx):
 
 def xyz_saver(data: Union[OMGData, list[OMGData]], filename: Path) -> None:
     """
-    Save structures from OMGData instances to an xyz file.
-    Correctly handles a list of single data objects and converts ghost
-    atom species from -1 to 0 for compatibility with the XYZ format.
+    Save structures from OMGData instances to an extxyz file.
+    Correctly handles a list of single data objects and stores ghost
+    atom information (-1) in a separate array to avoid data loss.
     """
-    if not filename.suffix == ".xyz":
-        raise ValueError("The filename must have the suffix '.xyz'.")
+    if not filename.suffix == ".extxyz":
+        raise ValueError("The filename must have the suffix '.extxyz'.")
+
     if not isinstance(data, list):
         data = [data]
 
     atoms_list = []
     for d in data:
         # Get species and convert to numpy array
-        species_np = d.species.cpu().numpy()
+        species_np = d.species.cpu().numpy().copy()
+
+        # Create a boolean array to mark ghost atoms
+        is_ghost = species_np == -1
 
         # Replace -1 with 0 for ghost atoms (XYZ format compatibility)
         # 0 corresponds to the 'X' dummy atom in ASE.
-        # TODO: are we accidentally mixing ghost and mask atoms then?
-        species_np[species_np == -1] = 0
+        species_np[is_ghost] = 0
 
-        atoms_list.append(
-            Atoms(
-                numbers=species_np,
-                positions=d.pos.cpu().numpy(),
-                cell=d.cell[0].cpu().numpy(),
-                pbc=True,
-            )
+        atoms = Atoms(
+            numbers=species_np,
+            positions=d.pos.cpu().numpy(),
+            cell=d.cell[0].cpu().numpy(),
+            pbc=True,
         )
+
+        # Attach the ghost atom information as a per-atom array
+        atoms.set_array("is_ghost", is_ghost)
+        atoms_list.append(atoms)
 
     # Overwrite the file with the new list of atoms.
     os.makedirs(filename.parent, exist_ok=True)
+    # The format is inferred from the filename suffix '.extxyz'
     write(filename, atoms_list, append=False)
 
 
 def convert_xyz_to_lmdb(input_xyz_file: Path, output_lmdb_file: Path) -> None:
-    """Converts an ASE-readable xyz file to a single-file LMDB database."""
+    """Converts an ASE-readable extxyz file to a single-file LMDB database."""
     if not input_xyz_file.exists():
         print(f"Error: Input file not found at {input_xyz_file}")
         return
 
     try:
+        # ASE automatically handles .extxyz and reads the extra arrays
         atoms_list = read(input_xyz_file, index=":")
         print(f"Read {len(atoms_list)} structures from '{input_xyz_file}'")
     except Exception as e:
-        print(f"Error reading XYZ file: {e}")
+        print(f"Error reading EXYZ file: {e}")
         return
 
     env = lmdb.open(str(output_lmdb_file), subdir=False, map_size=int(1e12))
     with env.begin(write=True) as txn:
         for i, atoms in enumerate(atoms_list):
             key = str(i).encode("utf-8")
+
+            atomic_numbers = atoms.get_atomic_numbers()
+
+            # Check if ghost atom info is present and restore -1
+            if "is_ghost" in atoms.arrays:
+                is_ghost = atoms.get_array("is_ghost")
+                atomic_numbers[is_ghost] = -1
+
             value = {
-                "atomic_numbers": torch.from_numpy(atoms.get_atomic_numbers()),
+                "atomic_numbers": torch.from_numpy(atomic_numbers),
                 "pos": torch.from_numpy(atoms.get_positions()).to(dtype=torch.float64),
                 "cell": torch.from_numpy(atoms.get_cell()[:]).to(dtype=torch.float64),
                 "pbc": torch.tensor(atoms.get_pbc(), dtype=torch.bool),
@@ -242,19 +265,19 @@ def save_atoms_to_lmdb(
 ) -> None:
     """
     Saves atomic data to a single-file LMDB by first saving to an
-    intermediate XYZ file and then converting.
+    intermediate EXYZ file and then converting.
     """
     print(
         f"--- Starting save process from {xyz_filename} to {lmdb_filename}: Atoms -> XYZ -> LMDB ---"
     )
-    # Step 1: Save the data to an XYZ file
+    # Step 1: Save the data to an EXYZ file
     xyz_saver(data, xyz_filename)
     print(f"Successfully saved intermediate file: '{xyz_filename}'")
 
-    # Step 2: Convert the XYZ file to an LMDB file
+    # Step 2: Convert the EXYZ file to an LMDB file
     convert_xyz_to_lmdb(xyz_filename, lmdb_filename)
     print(
-        f"--- Save process complete from {xyz_filename} to {lmdb_filename}: Atoms -> XYZ -> LMDB ---"
+        f"--- Save process from {xyz_filename} to {lmdb_filename}: Atoms -> XYZ -> LMDB complete ---"
     )
 
 
@@ -344,7 +367,8 @@ def main():
     ghosted_data_list = ghost_dataset(dataset, dataset_type)
 
     # --- Define File Paths for the full ghosted dataset ---
-    processed_dir = Path("./processed_datasets/")
+    run_folder = sys.argv[2]
+    processed_dir = Path(f"./processed_datasets/{run_folder}")
     processed_dir.mkdir(exist_ok=True)  # Ensure the directory exists
 
     full_xyz_filepath = processed_dir / f"{dataset_type}_ghosted.xyz"
