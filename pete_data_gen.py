@@ -1,4 +1,5 @@
 import os
+import sys
 import pickle
 import torch
 import lmdb
@@ -325,7 +326,12 @@ def ghost_dataset(dataset: OMGTorchDataset, dataset_type: str) -> list[OMGData]:
 def main():
     train_dataset, test_dataset, val_dataset = load_data()
 
-    dataset_type = input("Enter the dataset to ghost: train, test, or val:\n")
+    if len(sys.argv) < 2:
+        print("Usage: python parallelizable_data_gen.py <dataset_type>")
+        print("  dataset_type: train, test, or val")
+        sys.exit(1)
+
+    dataset_type = sys.argv[1]
     if dataset_type == "train":
         dataset = train_dataset
     elif dataset_type == "test":
@@ -333,7 +339,7 @@ def main():
     elif dataset_type == "val":
         dataset = val_dataset
     else:
-        raise ValueError("Invalid dataset")
+        raise ValueError("Invalid dataset. Must be 'train', 'test', or 'val'")
 
     ghosted_data_list = ghost_dataset(dataset, dataset_type)
 
