@@ -6,6 +6,7 @@ import lmdb
 from typing import Union
 from pathlib import Path
 from tqdm import tqdm
+import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
@@ -20,14 +21,65 @@ from omg.datamodule.dataloader import OMGTorchDataset, OMGData
 from voronoi_weighted import VoronoiPhantomCellGenerator
 
 
+DESIRED_ATOM_COUNT = 20
+
 VoronoiGenerator = VoronoiPhantomCellGenerator(
-    desired_atom_count=20,
+    desired_atom_count=DESIRED_ATOM_COUNT,
     dist_eval="min",
     # dist_eval="avg_x_min",
     # num_min_distances=3,
     epsilon=1e-3,
     weight_distances=False,
 )
+
+
+def process_single_sample(args):
+    """Processes a single sample to generate ghost atoms."""
+    i, single_data, voronoi_generator_config = args
+
+    # Re-create the generator inside the worker process
+    voronoi_generator = VoronoiPhantomCellGenerator(**voronoi_generator_config)
+
+    try:
+        # --- 1. Extract initial data ---
+        cell = single_data.cell[0].numpy()
+        x_vec, y_vec, z_vec = cell[0], cell[1], cell[2]
+
+        positions = single_data.pos.numpy()
+        atomic_numbers = single_data.species.numpy()
+
+        new_points = positions.copy()
+        new_atomic_numbers = atomic_numbers.copy()
+
+        # --- 2. Generate ghost atoms ---
+        iterations = DESIRED_ATOM_COUNT - single_data.n_atoms.item()
+        if iterations > 0:
+            for _ in range(iterations):
+                next_point = voronoi_generator._get_next_point(
+                    points=new_points,
+                    atomic_numbers=new_atomic_numbers,
+                    x_vec=x_vec,
+                    y_vec=y_vec,
+                    z_vec=z_vec,
+                )
+
+                if np.any(np.isnan(next_point)):
+                    print(f"NaN value detected for sample {i}, skipping.")
+                    return None  # Indicate failure
+
+                new_atomic_numbers = np.append(new_atomic_numbers, -1)
+                new_points = np.vstack([new_points, next_point])
+
+        # --- 3. Update the data object ---
+        single_data.pos = torch.from_numpy(new_points).to(dtype=torch.float64)
+        single_data.n_atoms = torch.tensor(len(new_points), dtype=torch.long)
+        single_data.batch = torch.zeros(len(new_points), dtype=torch.long)
+        single_data.species = torch.from_numpy(new_atomic_numbers).long()
+
+        return single_data
+    except Exception as e:
+        print(f"Error processing sample {i} in worker: {e}")
+        return None  # Indicate failure
 
 
 def load_data():
@@ -285,59 +337,32 @@ def ghost_dataset(dataset: OMGTorchDataset, dataset_type: str) -> list[OMGData]:
     # This list will store all the processed data objects
     ghosted_data_list = []
 
-    for single_data in tqdm(dataset, desc=f"Ghosting {dataset_type} dataset"):
-        # --- 1. Extract initial data ---
-        cell = single_data.cell[0].numpy()
-        x_vec, y_vec, z_vec = cell[0], cell[1], cell[2]
+    voronoi_generator_config = {
+        "desired_atom_count": VoronoiGenerator.desired_atom_count,
+        "dist_eval": VoronoiGenerator.dist_eval,
+        "epsilon": VoronoiGenerator.epsilon,
+        "num_min_distances": VoronoiGenerator.num_min_distances,
+        "weight_distances": VoronoiGenerator.weight_distances,
+    }
 
-        positions = single_data.pos.numpy()
-        atomic_numbers = single_data.species.numpy()
+    # Using a single-process pool to robustly handle timeouts
+    with mp.Pool(processes=1) as pool:
+        for i, single_data in enumerate(
+            tqdm(dataset, desc=f"Ghosting {dataset_type} dataset")
+        ):
+            args = (i, single_data, voronoi_generator_config)
+            result = pool.apply_async(process_single_sample, args=(args,))
 
-        new_points = positions.copy()
-        new_atomic_numbers = atomic_numbers.copy()
-
-        # --- 2. Generate ghost atoms ---
-        iterations = 20 - single_data.n_atoms.item()
-        if iterations > 0:
-            for _ in range(iterations):
-                # --- Save the inputs for debugging ---
-                debug_data = {
-                    "points": new_points,
-                    "atomic_numbers": new_atomic_numbers,
-                    "x_vec": x_vec,
-                    "y_vec": y_vec,
-                    "z_vec": z_vec,
-                }
-                with open("crash_input.pkl", "wb") as f:
-                    pickle.dump(debug_data, f)
-                # --- End of debugging save ---
-
-                next_point = VoronoiGenerator._get_next_point(
-                    points=new_points,
-                    atomic_numbers=new_atomic_numbers,
-                    x_vec=x_vec,
-                    y_vec=y_vec,
-                    z_vec=z_vec,
-                )
-
-                if np.any(np.isnan(next_point)):
-                    print(
-                        f"NaN value detected for a sample, skipping ghost atom generation for it."
-                    )
-                    break
-
-                new_atomic_numbers = np.append(new_atomic_numbers, -1)
-                new_points = np.vstack([new_points, next_point])
-
-        # --- 3. Update the data object with the new atom info ---
-        single_data.pos = torch.from_numpy(new_points).to(dtype=torch.float64)
-        single_data.n_atoms = torch.tensor(len(new_points), dtype=torch.long)
-        single_data.batch = torch.zeros(len(new_points), dtype=torch.long)
-
-        # Update species efficiently
-        single_data.species = torch.from_numpy(new_atomic_numbers).long()
-
-        ghosted_data_list.append(single_data)
+            try:
+                # Wait for the result with a 20-second timeout
+                processed_data = result.get(timeout=20)
+                if processed_data is not None:
+                    ghosted_data_list.append(processed_data)
+            except mp.TimeoutError:
+                print(f"Skipping sample {i} due to timeout.")
+                # The pool will automatically handle terminating the stuck worker
+            except Exception as e:
+                print(f"Error with multiprocessing for sample {i}: {e}")
 
     print(
         f"\n✅ Ghost atom generation complete. Total samples processed: {len(ghosted_data_list)}"
@@ -346,37 +371,44 @@ def ghost_dataset(dataset: OMGTorchDataset, dataset_type: str) -> list[OMGData]:
     return ghosted_data_list
 
 
-def main():
+def main(inputs: list[str] | None = None):
     train_dataset, test_dataset, val_dataset = load_data()
 
-    if len(sys.argv) < 2:
-        print("Usage: python parallelizable_data_gen.py <dataset_type>")
-        print("  dataset_type: train, test, or val")
-        sys.exit(1)
+    try:
+        if not inputs and len(sys.argv) < 2:
+            print("Usage: python parallelizable_data_gen.py <dataset_type>")
+            print("  dataset_type: train, test, or val")
+            sys.exit(1)
 
-    dataset_type = sys.argv[1]
-    if dataset_type == "train":
-        dataset = train_dataset
-    elif dataset_type == "test":
-        dataset = test_dataset
-    elif dataset_type == "val":
-        dataset = val_dataset
-    else:
-        raise ValueError("Invalid dataset. Must be 'train', 'test', or 'val'")
+        dataset_type = inputs[0] if inputs else sys.argv[1]
 
-    ghosted_data_list = ghost_dataset(dataset, dataset_type)
+        if dataset_type == "train":
+            dataset = train_dataset
+        elif dataset_type == "test":
+            dataset = test_dataset
+        elif dataset_type == "val":
+            dataset = val_dataset
+        else:
+            raise ValueError("Invalid dataset. Must be 'train', 'test', or 'val'")
 
-    # --- Define File Paths for the full ghosted dataset ---
-    run_folder = sys.argv[2]
-    processed_dir = Path(f"./processed_datasets/{run_folder}")
-    processed_dir.mkdir(exist_ok=True)  # Ensure the directory exists
+        ghosted_data_list = ghost_dataset(dataset, dataset_type)
 
-    full_xyz_filepath = processed_dir / f"{dataset_type}_ghosted.xyz"
-    full_lmdb_filepath = processed_dir / f"{dataset_type}_ghosted.lmdb"
+        # --- Define File Paths for the full ghosted dataset ---
+        run_folder = inputs[1] if inputs else sys.argv[2]
+        processed_dir = Path(f"./processed_datasets/{run_folder}")
+        processed_dir.mkdir(exist_ok=True)  # Ensure the directory exists
 
-    # --- Execute the full saving pipeline for the new dataset ---
-    save_atoms_to_lmdb(ghosted_data_list, full_xyz_filepath, full_lmdb_filepath)
+        full_xyz_filepath = processed_dir / f"{dataset_type}_ghosted.extxyz"
+        full_lmdb_filepath = processed_dir / f"{dataset_type}_ghosted.lmdb"
+
+        # --- Execute the full saving pipeline for the new dataset ---
+        save_atoms_to_lmdb(ghosted_data_list, full_xyz_filepath, full_lmdb_filepath)
+    finally:
+        print("Cleaning up dataset resources...")
+        train_dataset.dataset.cleanup()
+        test_dataset.dataset.cleanup()
+        val_dataset.dataset.cleanup()
 
 
 if __name__ == "__main__":
-    main()
+    main(inputs=["train", "unweighted_v0"])
