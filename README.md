@@ -25,7 +25,7 @@ This is the recommended way to train and run inference.
 **Datasets:**
 - `processed_datasets/` - Various LMDB datasets with different ghosting strategies
   - `unweighted_v2/` - Current production dataset (20-atom structures, 0.05 jitter). Ghost atoms dropped in via furthest-center-point 3x3x3 supercell Voronoi tessellations.
-  - `random_v0/` - Randomly placing ghost atoms in the base dataset until 20 atoms are reached 
+  - `random_v0/` - Randomly placing ghost atoms in the base dataset until 20-atom structure is reached
 
 ## Quick Start
 

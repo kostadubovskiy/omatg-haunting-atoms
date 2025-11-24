@@ -58,7 +58,8 @@ omatg_image = (
     # NOW install the local omg package LAST, but pin torch to prevent upgrading
     # Use --no-deps to prevent any dependency resolution that might upgrade torch
     .run_commands(
-        "pip uninstall -y omg || true",  # Uninstall if it exists (|| true prevents failure if not found)
+        # "pip uninstall -y omg || true",  # Uninstall if it exists (|| true prevents failure if not found)
+        # "pip install --no-deps --force-reinstall /root/omg_source",  # force reinstall
         "pip install --no-deps /root/omg_source",  # Install ONLY our package, no deps
         # Now install the missing omg dependencies without upgrading torch
         "pip install ase loguru tqdm scipy pandas matplotlib plotly pydantic",
@@ -91,7 +92,7 @@ omatg_image = (
 @app.function(
     image=omatg_image,
     gpu="A100",
-    secrets=[Secret.from_dotenv(compiled_repo_path / ".env")],
+    secrets=[Secret.from_dotenv(compiled_repo_path / ".env.local")],
     volumes={"/root/ghosting-repo/checkpoints": checkpoints_vol},
     timeout=86400,
 )
@@ -186,7 +187,7 @@ def train():
 @app.function(
     image=omatg_image,
     gpu="A100",
-    secrets=[Secret.from_dotenv(compiled_repo_path / ".env")],
+    secrets=[Secret.from_dotenv(compiled_repo_path / ".env.local")],
     volumes={"/root/ghosting-repo/checkpoints": checkpoints_vol},
     timeout=86400,
 )
@@ -228,7 +229,7 @@ def run_inference():
 @app.function(
     image=omatg_image,
     gpu="A100",
-    secrets=[Secret.from_dotenv(compiled_repo_path / ".env")],
+    secrets=[Secret.from_dotenv(compiled_repo_path / ".env.local")],
     volumes={"/root/ghosting-repo/checkpoints": checkpoints_vol},
     timeout=86400,
 )
@@ -275,7 +276,7 @@ def run_single_sample():
 @app.function(
     image=omatg_image,
     gpu="A100",
-    secrets=[Secret.from_dotenv(compiled_repo_path / ".env")],
+    secrets=[Secret.from_dotenv(compiled_repo_path / ".env.local")],
     volumes={"/root/ghosting-repo/checkpoints": checkpoints_vol},
     timeout=86400,
 )

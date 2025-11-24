@@ -26,11 +26,11 @@ Containerized training, inference, and evaluation for crystal structure generati
 3. **Set up credentials:**
    ```bash
    cd modal_training
-   cp .env.template .env
-   # Edit .env and add your WANDB_API_KEY
+   cp .env.template .env.local
+   # Edit .env.local and add your WANDB_API_KEY
    # Source env file
    set -a
-   source .env
+   source .env.local
    set +a
    ```
 
