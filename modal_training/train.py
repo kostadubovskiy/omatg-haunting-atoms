@@ -11,8 +11,9 @@ app = App("omatg-training")
 
 # Define paths
 compiled_repo_path = Path(__file__).parent / "ghost-training-compiled"
-# omg_path = Path(__file__).parent / "OMatG-fork"
-omg_path = Path(__file__).parent / "omg"
+omg_path = (
+    Path(__file__).parent.parent / "omg-fork"
+)  # path to forked OMG repo (ghosting-repo/omg-fork)
 
 # Create a volume for checkpoints
 checkpoints_vol = Volume.from_name("omatg-checkpoints", create_if_missing=True)
@@ -70,12 +71,17 @@ omatg_image = (
     )
     # Upload helper scripts/configs last so Modal mounts them at runtime
     .add_local_file(
-        Path(__file__).parent.parent / "check_result.py",
+        Path(__file__).parent / "check_result.py",
         remote_path="/root/check_result.py",
         copy=True,
     )
     .add_local_file(
-        Path(__file__).parent / "ghosting-repo" / "ode_ghosted_modal.yaml",
+        Path(__file__).parent / "ghost_utils.py",
+        remote_path="/root/ghost_utils.py",
+        copy=True,
+    )
+    .add_local_file(
+        Path(__file__).parent / "ghost-training-compiled" / "ode_ghosted.yaml",
         remote_path="/root/ghosting-repo/ode_ghosted_modal.yaml",
         copy=True,
     )

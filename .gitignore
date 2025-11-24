@@ -1,1 +1,16 @@
+# Environment variables (contains secrets)
 .env.local
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# LMDB lock files
+*.lmdb-lock
+
+omg-fork/*
+
+PATCHES.md
+CHANGELOG.md
+AGENTS.md

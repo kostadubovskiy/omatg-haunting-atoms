@@ -30,7 +30,23 @@ VoronoiGenerator = VoronoiPhantomCellGenerator(
     # num_min_distances=3,
     epsilon=1e-3,
     weight_distances=False,
+    noise_magnitude=5e-2,  # 0.05 ideal for squashing low-interatomic distances and breaking voronoi degeneracies but not skewing the distribution
 )
+
+# v0
+# => no jtter
+# v1
+# => 0.01 jitter
+# v2
+# => 0.05 jitter
+# v3
+# => 0.02 jitter
+# v4
+# => 0.1 jitter
+# v5
+# => 0.15 jitter
+# v6
+# => 0.2 jitter
 
 
 def process_single_sample(args):
@@ -114,13 +130,15 @@ def load_data():
     return train_dataset, test_dataset, val_dataset
 
 
-def plot_crystal_with_points(single_data, idx):
+def plot_crystal_with_points(single_data, idx, title=None, highlight_points=None):
     """
     Plots a crystal structure with original and ghost points.
 
     Args:
         single_data: A data object containing cell, positions, and species.
         idx: The index of the sample being plotted.
+        title (str, optional): The title for the plot. Defaults to None.
+        highlight_points (np.ndarray, optional): Array of points to highlight.
     """
     cell = single_data.cell[0].numpy()
     x_vec, y_vec, z_vec = cell[0], cell[1], cell[2]
@@ -178,6 +196,21 @@ def plot_crystal_with_points(single_data, idx):
         )
     )
 
+    # Add highlighted points if provided
+    if highlight_points is not None:
+        # Ensure highlight_points is a 2D array
+        points_to_plot = np.atleast_2d(highlight_points)
+        fig.add_trace(
+            go.Scatter3d(
+                x=points_to_plot[:, 0],
+                y=points_to_plot[:, 1],
+                z=points_to_plot[:, 2],
+                mode="markers",
+                marker=dict(size=10, color="cyan", symbol="diamond", opacity=0.9),
+                name="Highlighted Point",
+            )
+        )
+
     # Define the 8 vertices of the parallelepiped
     origin = np.array([0, 0, 0])
     vertices = [
@@ -223,7 +256,7 @@ def plot_crystal_with_points(single_data, idx):
         )
 
     fig.update_layout(
-        title=f"Sample {idx}: Newly Loaded Data",
+        title=title if title else f"Sample {idx}: Newly Loaded Data",
         width=500,  # Width in pixels
         height=500,  # Height in pixels
         autosize=False,  # Disable autosize to use fixed dimensions
@@ -253,9 +286,11 @@ def xyz_saver(data: Union[OMGData, list[OMGData]], filename: Path) -> None:
         # Create a boolean array to mark ghost atoms
         is_ghost = species_np == -1
 
-        # Replace -1 with 0 for ghost atoms (XYZ format compatibility)
-        # 0 corresponds to the 'X' dummy atom in ASE.
-        species_np[is_ghost] = 0
+        # Store ghosts as max(real_Z) + 1 to avoid mixing with mask tokens (0/-1)
+        real_species = species_np[~is_ghost]
+        max_real = int(real_species.max()) if real_species.size else 0
+        ghost_label = max_real + 1
+        species_np[is_ghost] = ghost_label
 
         atoms = Atoms(
             numbers=species_np,
@@ -266,6 +301,10 @@ def xyz_saver(data: Union[OMGData, list[OMGData]], filename: Path) -> None:
 
         # Attach the ghost atom information as a per-atom array
         atoms.set_array("is_ghost", is_ghost)
+        atoms.set_array(
+            "ghost_atomic_number",
+            np.full(len(species_np), ghost_label, dtype=species_np.dtype),
+        )
         atoms_list.append(atoms)
 
     # Overwrite the file with the new list of atoms.
@@ -343,6 +382,7 @@ def ghost_dataset(dataset: OMGTorchDataset, dataset_type: str) -> list[OMGData]:
         "epsilon": VoronoiGenerator.epsilon,
         "num_min_distances": VoronoiGenerator.num_min_distances,
         "weight_distances": VoronoiGenerator.weight_distances,
+        "noise_magnitude": VoronoiGenerator.noise_magnitude,
     }
 
     # Using a single-process pool to robustly handle timeouts
@@ -411,4 +451,4 @@ def main(inputs: list[str] | None = None):
 
 
 if __name__ == "__main__":
-    main(inputs=["train", "unweighted_v0"])
+    main(inputs=["val", "unweighted_v6"])
