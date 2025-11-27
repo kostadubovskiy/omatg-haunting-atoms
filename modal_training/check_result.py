@@ -143,7 +143,7 @@ def main():
     if args.batch_size is not None:
         predict_cmd.append(f"--data.batch_size={args.batch_size}")
 
-    run(predict_cmd, cwd=repo)
+    run(predict_cmd, cwd=repo / "ghosting-repo")
     remap_ghosts_in_xyz(xyz_out)
 
     if not args.skip_visualize:

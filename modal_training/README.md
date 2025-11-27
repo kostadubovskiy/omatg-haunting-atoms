@@ -87,6 +87,8 @@ Runs visualize/metrics on `generated_modal.xyz` already on the volume.
 | List containers | `modal container list` |
 | Shell into container | `modal shell <container_id>` |
 
+Use `run -d` for detached mode, which runs even if your computer turns off (you **must then turn the job off**, or spend a fortune).
+
 ## Configuration
 
 **Training config:** `ghost-training-compiled/ode_ghosted.yaml`

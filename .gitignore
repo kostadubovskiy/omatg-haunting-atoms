@@ -15,4 +15,7 @@ PATCHES.md
 CHANGELOG.md
 AGENTS.md
 
+.venv
+.vscode
 .venv/*
+.vscode/*

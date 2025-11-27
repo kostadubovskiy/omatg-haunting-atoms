@@ -1,5 +1,6 @@
 import os
 import wandb
+import threading
 
 import subprocess
 from pathlib import Path
@@ -64,7 +65,7 @@ omatg_image = (
         # Now install the missing omg dependencies without upgrading torch
         "pip install ase loguru tqdm scipy pandas matplotlib plotly pydantic",
         "pip install 'pymatgen~=2025.6' 'matminer~=0.9' 'smact~=3.1' 'spglib~=2.6' 'wandb~=0.20'",
-        "echo 'Force rebuild 2025-11-22-1745'",
+        "echo 'Force rebuild 2025-11-27-1200-add-checkpoint-monitor'",
     )
     # Symlink data
     .run_commands(
@@ -82,8 +83,13 @@ omatg_image = (
         copy=True,
     )
     .add_local_file(
+        Path(__file__).parent / "commit_checkpoints.py",
+        remote_path="/root/commit_checkpoints.py",
+        copy=True,
+    )
+    .add_local_file(
         Path(__file__).parent / "ghost-training-compiled" / "ode_ghosted.yaml",
-        remote_path="/root/ghosting-repo/ode_ghosted_modal.yaml",
+        remote_path="/root/ghosting-repo/ode_ghosted.yaml",
         copy=True,
     )
 )
@@ -149,6 +155,27 @@ def train():
     print("=" * 80)
     print()
 
+    # Start background checkpoint monitor
+    import sys
+
+    sys.path.insert(0, "/root")
+    from commit_checkpoints import monitor_and_commit
+
+    checkpoint_dir = (
+        "/root/ghosting-repo/checkpoints/lightning_logs/version_0/checkpoints"
+    )
+    latest_checkpoint_path = "/root/ghosting-repo/checkpoints/latest-checkpoint.ckpt"
+
+    monitor_thread = threading.Thread(
+        target=monitor_and_commit,
+        args=(checkpoints_vol, checkpoint_dir, latest_checkpoint_path, 30),
+        daemon=True,
+    )
+    monitor_thread.start()
+    print(
+        "✓ Started background checkpoint monitor (commits every 30s when checkpoints update)"
+    )
+
     training_command = [
         "omg",
         "fit",
@@ -158,28 +185,32 @@ def train():
     # Set the working directory for the subprocess
     working_dir = "/root/ghosting-repo"
 
-    # Execute the training command
-    process = subprocess.Popen(
-        training_command,
-        cwd=working_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    try:
+        # Execute the training command
+        process = subprocess.Popen(
+            training_command,
+            cwd=working_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
 
-    # Stream the output
-    if process.stdout:
-        for line in iter(process.stdout.readline, ""):
-            print(line, end="")
+        # Stream the output
+        if process.stdout:
+            for line in iter(process.stdout.readline, ""):
+                print(line, end="")
 
-    # Wait for the process to complete and get the return code
-    return_code = process.wait()
+        # Wait for the process to complete and get the return code
+        return_code = process.wait()
 
-    if return_code != 0:
-        raise subprocess.CalledProcessError(return_code, training_command)
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, training_command)
 
-    # Commit the volume to persist checkpoints
-    checkpoints_vol.commit()
+    finally:
+        # Always commit the volume one final time, even if training is interrupted
+        print("\nPerforming final checkpoint commit...")
+        checkpoints_vol.commit()
+        print("✓ Final commit completed")
 
     print("Training finished successfully.")
 
@@ -206,9 +237,9 @@ def run_inference():
         "--repo",
         "/root",
         "--config",
-        "/root/ghosting-repo/ode_ghosted_modal.yaml",
+        "/root/ghosting-repo/ode_ghosted.yaml",
         "--ckpt",
-        "/root/ghosting-repo/checkpoints/lightning_logs/version_0/checkpoints/best_val_loss_total.ckpt",
+        "/root/ghosting-repo/checkpoints/latest-checkpoint.ckpt",
         "--accelerator",
         "gpu",
         "--xyz_out",
@@ -247,9 +278,9 @@ def run_single_sample():
         "--repo",
         "/root",
         "--config",
-        "/root/ghosting-repo/ode_ghosted_modal.yaml",
+        "/root/ghosting-repo/ode_ghosted.yaml",
         "--ckpt",
-        "/root/ghosting-repo/checkpoints/lightning_logs/version_0/checkpoints/best_val_loss_total.ckpt",
+        "/root/ghosting-repo/checkpoints/latest-checkpoint.ckpt",
         "--accelerator",
         "gpu",
         "--limit_predict_batches",
@@ -296,7 +327,7 @@ def evaluate_existing():
         [
             "omg",
             "visualize",
-            "--config=/root/ghosting-repo/ode_ghosted_modal.yaml",
+            "--config=/root/ghosting-repo/ode_ghosted.yaml",
             f"--xyz_file={xyz_path}",
             f"--plot_name={results_dir / 'generated_distribution_modal.pdf'}",
             "--trainer.accelerator=gpu",
@@ -310,7 +341,7 @@ def evaluate_existing():
         [
             "omg",
             "csp_metrics",
-            "--config=/root/ghosting-repo/ode_ghosted_modal.yaml",
+            "--config=/root/ghosting-repo/ode_ghosted.yaml",
             f"--xyz_file={xyz_path}",
             f"--result_name={results_dir / 'csp_metrics_modal.json'}",
             "--trainer.accelerator=gpu",
@@ -345,4 +376,11 @@ def main(action: str = "train"):
         evaluate_existing.remote()
         print("Evaluation job started.")
     else:
-        raise ValueError(f"Unknown action '{action}'. Use 'train' or 'inference'.")
+        if action == "run_single_sample":
+            print("Starting single-sample inference on Modal...")
+            run_single_sample.remote()
+            print("Single-sample job started.")
+        else:
+            raise ValueError(
+                f"Unknown action '{action}'. Use 'train', 'inference', 'single', or 'evaluate'."
+            )
