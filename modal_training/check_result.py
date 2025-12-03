@@ -131,6 +131,7 @@ def main():
         xyz_out.unlink()
         print(f"Deleted existing file: {xyz_out}")
 
+    # Step 1: Generate structures
     predict_cmd = [
         "omg",
         "predict",
@@ -148,42 +149,74 @@ def main():
     if args.batch_size is not None:
         predict_cmd.append(f"--data.batch_size={args.batch_size}")
 
-    run(predict_cmd, cwd=repo / "ghosting-repo")
-    remap_ghosts_in_xyz(xyz_out)
+    try:
+        run(predict_cmd, cwd=repo / "ghosting-repo")
+        remap_ghosts_in_xyz(xyz_out)
+        print("✓ Successfully generated structures")
+    except subprocess.CalledProcessError as e:
+        print(f"✗ Error during prediction: {e}")
+        raise  # Re-raise since we can't continue without generated structures
 
+    # Step 2: Visualize (optional, can fail if training dataset unavailable)
     if not args.skip_visualize:
-        run(
-            [
-                "omg",
-                "visualize",
-                f"--config={config}",
-                f"--xyz_file={xyz_out}",
-                f"--plot_name={plot_out}",
-                accelerator_flag,
-            ],
-            cwd=repo,
-        )
+        try:
+            # Run visualize from ghosting-repo directory so relative paths in config resolve correctly
+            run(
+                [
+                    "omg",
+                    "visualize",
+                    f"--config={config}",
+                    f"--xyz_file={xyz_out}",
+                    f"--plot_name={plot_out}",
+                    accelerator_flag,
+                ],
+                cwd=repo / "ghosting-repo",
+            )
+            print("✓ Successfully created visualization")
+        except subprocess.CalledProcessError as e:
+            print(
+                f"⚠ Warning: Visualization failed (this is often due to missing training dataset): {e}"
+            )
+            print("  Continuing with metrics computation...")
+            # Don't raise - continue to metrics
 
+    # Step 3: Compute metrics (optional)
     if not args.skip_metrics:
-        run(
-            [
-                "omg",
-                "csp_metrics",
-                f"--config={config}",
-                f"--xyz_file={xyz_out}",
-                f"--result_name={csp_json}",
-                accelerator_flag,
-            ],
-            cwd=repo,
-        )
+        try:
+            # Run csp_metrics from ghosting-repo directory so relative paths in config resolve correctly
+            run(
+                [
+                    "omg",
+                    "csp_metrics",
+                    f"--config={config}",
+                    f"--xyz_file={xyz_out}",
+                    f"--result_name={csp_json}",
+                    accelerator_flag,
+                ],
+                cwd=repo / "ghosting-repo",
+            )
+            print("✓ Successfully computed CSP metrics")
+        except subprocess.CalledProcessError as e:
+            print(f"✗ Error during metrics computation: {e}")
+            # Don't raise - at least we have the generated structures
 
-    atoms = read(xyz_out, index=0)
-    write(cif_out, atoms)
-    print(f"\nSaved first structure to {cif_out}")
+    # Step 4: Save sample CIF
+    try:
+        atoms = read(xyz_out, index=0)
+        write(cif_out, atoms)
+        print(f"✓ Saved first structure to {cif_out}")
+    except Exception as e:
+        print(f"⚠ Warning: Could not save CIF file: {e}")
 
+    # Step 5: Print metrics summary
     if not args.skip_metrics and csp_json.exists():
-        metrics = json.loads(csp_json.read_text())
-        print("\nCSP metrics sample:", json.dumps(metrics, indent=2)[:400], "...")
+        try:
+            metrics = json.loads(csp_json.read_text())
+            print("\nCSP metrics sample:", json.dumps(metrics, indent=2)[:400], "...")
+        except Exception as e:
+            print(f"⚠ Warning: Could not read metrics: {e}")
+
+    print("\n✓ Inference pipeline completed (some steps may have been skipped)")
 
 
 if __name__ == "__main__":

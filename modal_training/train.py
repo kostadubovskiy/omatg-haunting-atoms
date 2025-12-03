@@ -1,3 +1,4 @@
+import time
 import os
 import wandb
 import threading
@@ -345,34 +346,51 @@ def evaluate_existing():
     if not xyz_path.exists():
         raise FileNotFoundError(f"{xyz_path} not found; run inference first.")
 
-    # Run visualize
-    subprocess.run(
-        [
-            "omg",
-            "visualize",
-            "--config=/root/ghosting-repo/ode_ghosted.yaml",
-            f"--xyz_file={xyz_path}",
-            f"--plot_name={results_dir / 'generated_distribution_modal.pdf'}",
-            "--trainer.accelerator=gpu",
-        ],
-        check=True,
-        cwd="/root",
-    )
+    ta = time.time()
+    # Run visualize from ghosting-repo directory so relative paths in config resolve correctly
+    try:
+        subprocess.run(
+            [
+                "omg",
+                "visualize",
+                "--config=/root/ghosting-repo/ode_ghosted.yaml",
+                f"--xyz_file={xyz_path}",
+                f"--plot_name={results_dir / 'generated_distribution_modal.pdf'}",
+                "--trainer.accelerator=gpu",
+                "--skip_init=true",
+            ],
+            check=True,
+            cwd="/root/ghosting-repo",  # Changed from "/root"
+        )
+        print("✓ Successfully created visualization")
+    except subprocess.CalledProcessError as e:
+        print(f"⚠ Warning: Visualization failed: {e}")
+        print("  Continuing with metrics computation...")
 
-    # Run csp_metrics
-    subprocess.run(
-        [
-            "omg",
-            "csp_metrics",
-            "--config=/root/ghosting-repo/ode_ghosted.yaml",
-            f"--xyz_file={xyz_path}",
-            f"--result_name={results_dir / 'csp_metrics_modal.json'}",
-            "--trainer.accelerator=gpu",
-        ],
-        check=True,
-        cwd="/root",
-    )
+    tb = time.time()
+    print(f"Time taken to create visualization: {tb - ta} seconds")
 
+    tc = time.time()
+    # Run csp_metrics from ghosting-repo directory so relative paths in config resolve correctly
+    try:
+        subprocess.run(
+            [
+                "omg",
+                "csp_metrics",
+                "--config=/root/ghosting-repo/ode_ghosted.yaml",
+                f"--xyz_file={xyz_path}",
+                f"--result_name={results_dir / 'csp_metrics_modal.json'}",
+                "--trainer.accelerator=gpu",
+            ],
+            check=True,
+            cwd="/root/ghosting-repo",  # Changed from "/root"
+        )
+        print("✓ Successfully computed CSP metrics")
+    except subprocess.CalledProcessError as e:
+        print(f"✗ Error during metrics computation: {e}")
+    td = time.time()
+    print(f"Time taken to compute CSP metrics: {td - tc} seconds")
+    print(f"Total time taken: {td - ta} seconds")
     checkpoints_vol.commit()
     print(f"Evaluation artifacts saved to {results_dir}")
 
