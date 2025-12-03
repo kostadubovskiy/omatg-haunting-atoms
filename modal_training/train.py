@@ -65,7 +65,7 @@ omatg_image = (
         # Now install the missing omg dependencies without upgrading torch
         "pip install ase loguru tqdm scipy pandas matplotlib plotly pydantic",
         "pip install 'pymatgen~=2025.6' 'matminer~=0.9' 'smact~=3.1' 'spglib~=2.6' 'wandb~=0.20'",
-        "echo 'Force rebuild 2025-11-27-1200-add-checkpoint-monitor'",
+        "echo 'Force rebuild 2025-12-02-1600-dynamic-version-monitor'",
     )
     # Symlink data
     .run_commands(
@@ -161,14 +161,12 @@ def train():
     sys.path.insert(0, "/root")
     from commit_checkpoints import monitor_and_commit
 
-    checkpoint_dir = (
-        "/root/ghosting-repo/checkpoints/lightning_logs/version_0/checkpoints"
-    )
+    lightning_logs_root = "/root/ghosting-repo/checkpoints"
     latest_checkpoint_path = "/root/ghosting-repo/checkpoints/latest-checkpoint.ckpt"
 
     monitor_thread = threading.Thread(
         target=monitor_and_commit,
-        args=(checkpoints_vol, checkpoint_dir, latest_checkpoint_path, 30),
+        args=(checkpoints_vol, lightning_logs_root, latest_checkpoint_path, 30),
         daemon=True,
     )
     monitor_thread.start()
@@ -180,6 +178,7 @@ def train():
         "omg",
         "fit",
         "--config=ode_ghosted.yaml",
+        "--trainer.default_root_dir=/root/ghosting-repo/checkpoints",
     ]
 
     # Set the working directory for the subprocess
@@ -264,13 +263,37 @@ def run_inference():
     volumes={"/root/ghosting-repo/checkpoints": checkpoints_vol},
     timeout=86400,
 )
-def run_single_sample():
+def run_single_sample(ckpt_path: str | None = None):
     """
     Generate a single-sample prediction (and supporting artifacts) for quick sanity checks.
+
+    Args:
+        ckpt_path: Optional path to checkpoint. If None, uses latest-checkpoint.ckpt from volume.
+                  Can be a local path or a path on the volume.
     """
 
     results_dir = Path("/root/ghosting-repo/checkpoints/modal_results")
     os.makedirs(results_dir, exist_ok=True)
+
+    xyz_out = results_dir / "single_modal.xyz"
+    # Delete existing file to prevent appending from previous runs
+    if xyz_out.exists():
+        xyz_out.unlink()
+        print(f"Deleted existing file: {xyz_out}")
+
+    # Default to latest checkpoint from volume, or use provided path
+    if ckpt_path is None:
+        ckpt_path = "/root/ghosting-repo/checkpoints/latest-checkpoint.ckpt"
+        print(f"Using default checkpoint from volume: {ckpt_path}")
+    else:
+        print(f"Using provided checkpoint path: {ckpt_path}")
+
+    # Verify checkpoint exists
+    if not Path(ckpt_path).exists():
+        raise FileNotFoundError(
+            f"Checkpoint not found: {ckpt_path}\n"
+            f"If using volume, checkpoints should be in /root/ghosting-repo/checkpoints/"
+        )
 
     cmd = [
         "python3",
@@ -280,7 +303,7 @@ def run_single_sample():
         "--config",
         "/root/ghosting-repo/ode_ghosted.yaml",
         "--ckpt",
-        "/root/ghosting-repo/checkpoints/latest-checkpoint.ckpt",
+        ckpt_path,
         "--accelerator",
         "gpu",
         "--limit_predict_batches",
@@ -355,9 +378,13 @@ def evaluate_existing():
 
 
 @app.local_entrypoint()
-def main(action: str = "train"):
+def main(action: str = "train", ckpt_path: str | None = None):
     """
     Local entrypoint to trigger Modal jobs.
+
+    Args:
+        action: Action to perform ('train', 'inference', 'single', 'evaluate')
+        ckpt_path: Optional checkpoint path for inference actions
     """
     if action == "train":
         print("Starting OMatG training on Modal...")
@@ -369,7 +396,7 @@ def main(action: str = "train"):
         print("Inference job started.")
     elif action == "single":
         print("Starting single-sample inference on Modal...")
-        run_single_sample.remote()
+        run_single_sample.remote(ckpt_path=ckpt_path)
         print("Single-sample job started.")
     elif action == "evaluate":
         print("Running evaluation on existing Modal XYZ...")
@@ -378,7 +405,7 @@ def main(action: str = "train"):
     else:
         if action == "run_single_sample":
             print("Starting single-sample inference on Modal...")
-            run_single_sample.remote()
+            run_single_sample.remote(ckpt_path=ckpt_path)
             print("Single-sample job started.")
         else:
             raise ValueError(

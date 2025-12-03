@@ -73,6 +73,44 @@ modal run train.py --action evaluate
 ```
 Runs visualize/metrics on `generated_modal.xyz` already on the volume.
 
+## Manual Checkpoint Upload (SSH fallback)
+
+If the automatic volume sync misses a checkpoint, copy it manually from the running Modal container:
+
+1. **Shell into the container (while training is running!)**
+   ```bash
+   modal container list          # find the container ID
+   modal shell <CONTAINER_ID>
+   ```
+
+2. **Install Modal CLI inside the container (first time only)**
+   ```bash
+   pip install --no-cache-dir modal
+   modal token new
+   ```
+
+3. **Copy the desired checkpoint into the mounted volume path**
+   ```bash
+   cp /root/ghosting-repo/lightning_logs/version_0/checkpoints/best_val_loss_total.ckpt \
+      /root/ghosting-repo/checkpoints/latest-checkpoint.ckpt
+   ```
+
+4. **Upload it to the shared volume**
+   ```bash
+   modal volume rm  omatg-checkpoints latest-checkpoint.ckpt  # optional, avoids "already exists"
+   modal volume put omatg-checkpoints \
+       /root/ghosting-repo/checkpoints/latest-checkpoint.ckpt \
+       latest-checkpoint.ckpt
+   ```
+
+5. **Download from the volume on your laptop**
+   ```bash
+   cd /Users/kosta/Documents/Research/martiniani/omatg_TomEgg/code
+   modal volume get omatg-checkpoints latest-checkpoint.ckpt modal_training/checkpoints/
+   ```
+
+This fallback ensures you can always extract checkpoints, even if the background commit thread is interrupted mid-run.
+
 ## Command Reference
 
 | Action | Command |
@@ -82,7 +120,7 @@ Runs visualize/metrics on `generated_modal.xyz` already on the volume.
 | Single sample | `modal run train.py --action single` |
 | Evaluate existing | `modal run train.py --action evaluate` |
 | Download results | `modal volume get omatg-checkpoints modal_results <local_dir>` |
-| Download checkpoint | `modal volume get omatg-checkpoints lightning_logs/version_0/checkpoints <local_dir>` |
+| Download checkpoint | `modal volume get omatg-checkpoints latest-checkpoint.ckpt <local_path>` |
 | Tail logs | `modal logs omatg-training.<function_name>` |
 | List containers | `modal container list` |
 | Shell into container | `modal shell <container_id>` |

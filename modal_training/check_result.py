@@ -126,6 +126,11 @@ def main():
 
     accelerator_flag = f"--trainer.accelerator={args.accelerator}"
 
+    # Delete existing output file to prevent appending from previous runs
+    if xyz_out.exists():
+        xyz_out.unlink()
+        print(f"Deleted existing file: {xyz_out}")
+
     predict_cmd = [
         "omg",
         "predict",

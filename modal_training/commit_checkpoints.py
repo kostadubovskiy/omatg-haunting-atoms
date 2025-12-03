@@ -11,31 +11,41 @@ from modal import Volume
 
 
 def monitor_and_commit(
-    vol: Volume, checkpoint_dir: str, latest_path: str, check_interval: int = 30
+    vol: Volume, logs_root: str, latest_path: str, check_interval: int = 30
 ):
     """
     Monitor checkpoint directory and commit volume when new checkpoints appear.
 
     Args:
         vol: Modal Volume object to commit
-        checkpoint_dir: Directory where checkpoints are saved
+        logs_root: Root directory containing lightning_logs (e.g., /root/ghosting-repo/checkpoints)
         latest_path: Path to copy latest checkpoint to
         check_interval: How often to check for new checkpoints (seconds)
     """
-    checkpoint_path = Path(checkpoint_dir)
+    lightning_logs_root = Path(logs_root) / "lightning_logs"
     latest_checkpoint_path = Path(latest_path)
     latest_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
     last_commit_time = 0
     last_seen_files = set()
 
-    print("Starting checkpoint monitor: watching", checkpoint_path)
+    print(f"Starting checkpoint monitor: watching {lightning_logs_root}")
 
     while True:
         try:
-            if checkpoint_path.exists():
+            # Dynamically find the latest version directory on each check
+            if lightning_logs_root.exists():
+                version_dirs = sorted(lightning_logs_root.glob("version_*"))
+                if version_dirs:
+                    checkpoint_dir = version_dirs[-1] / "checkpoints"
+                else:
+                    checkpoint_dir = lightning_logs_root / "version_0" / "checkpoints"
+            else:
+                checkpoint_dir = lightning_logs_root / "version_0" / "checkpoints"
+
+            if checkpoint_dir.exists():
                 # Find all checkpoint files
-                checkpoint_files = list(checkpoint_path.glob("*.ckpt"))
+                checkpoint_files = list(checkpoint_dir.glob("*.ckpt"))
 
                 if checkpoint_files:
                     # Find the latest checkpoint by modification time
@@ -62,5 +72,8 @@ def monitor_and_commit(
 
         except Exception as e:
             print(f"Warning: Error in checkpoint monitor: {e}")
+            import traceback
+
+            traceback.print_exc()
 
         time.sleep(check_interval)
