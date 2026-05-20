@@ -243,8 +243,12 @@ class VoronoiPhantomCellGenerator:
             supercell_points, x_vec, y_vec, z_vec
         )
 
+        # Distance metric must include periodic images (full supercell), cf. voronoi.py
+        supercell_atomic_numbers = np.tile(atomic_numbers, 27)
         next_point = (
-            self._get_farthest_point(voronoi_vertices, centered_points, atomic_numbers)
+            self._get_farthest_point(
+                voronoi_vertices, supercell_points, supercell_atomic_numbers
+            )
             + center_vector
         )
         return next_point
