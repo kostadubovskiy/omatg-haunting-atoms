@@ -26,6 +26,9 @@ WORKDIR=/scratch/kd2862/omatg-ghosted/ghosting-repo
 OVERLAY=/scratch/kd2862/omatg-ghosted/overlay-15GB-500K.ext3
 IMAGE=/share/apps/images/cuda12.6.3-cudnn9.5.1-ubuntu22.04.5.sif
 
+# Source vanilla MP-20 LMDBs (sibling of ghosting-repo on HPC, not nested).
+MP20_DIR=/scratch/kd2862/omatg-ghosted/omg-fork/omg/data/mp_20
+
 # Name of the new processed_datasets/ subdirectory to write to.
 # Periodicity fix + 0.05 supercell jitter.
 RUN_FOLDER=mp_20_periodic_fix_j05
@@ -37,6 +40,7 @@ echo "Date:      $(date)"
 echo "Workdir:   ${WORKDIR}"
 echo "Overlay:   ${OVERLAY}"
 echo "Image:     ${IMAGE}"
+echo "Source:    ${MP20_DIR}"
 echo "Run name:  ${RUN_FOLDER}"
 echo "Output to: ${WORKDIR}/processed_datasets/${RUN_FOLDER}/"
 echo "========================="
@@ -56,7 +60,7 @@ for SPLIT in val test train; do
     singularity exec \
         --overlay "${OVERLAY}":rw \
         "${IMAGE}" \
-        /bin/bash -c "source /ext3/env.sh && cd ${WORKDIR} && python pete_data_gen.py ${SPLIT} ${RUN_FOLDER}"
+        /bin/bash -c "source /ext3/env.sh && cd ${WORKDIR} && MP20_DIR=${MP20_DIR} python pete_data_gen.py ${SPLIT} ${RUN_FOLDER}"
     echo "---- Done split: ${SPLIT} (elapsed ${SECONDS}s) ----"
 done
 

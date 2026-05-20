@@ -94,7 +94,8 @@ def process_single_sample(args):
         return None  # Indicate failure
 
 
-MP20_DIR = Path("./omg-fork/omg/data/mp_20")
+# Override with the MP20_DIR env var (e.g. on HPC where the layout is flat).
+MP20_DIR = Path(os.environ.get("MP20_DIR", "./omg-fork/omg/data/mp_20"))
 
 
 def load_data():
