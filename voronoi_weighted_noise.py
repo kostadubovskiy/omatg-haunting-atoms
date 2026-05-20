@@ -25,6 +25,7 @@ class VoronoiPhantomCellGenerator:
         epsilon: float = 1e-3,
         num_min_distances: int = None,
         weight_distances: bool = False,
+        noise_magnitude: float = 0.05,
     ):
         """
         Initializes the VoronoiPhantomCellGenerator.
@@ -38,12 +39,16 @@ class VoronoiPhantomCellGenerator:
                 Required when dist_eval is "avg_x_min". Defaults to None.
             weight_distances (bool): Whether to weight the distances by the atomic numbers.
                 Defaults to False.
+            noise_magnitude (float): Per-image jitter applied to supercell translations,
+                in fractional-lattice units. Breaks geometric degeneracies in the Voronoi
+                tessellation. Defaults to 0.05.
         """
         self.desired_atom_count = desired_atom_count
         self.dist_eval = dist_eval
         self.epsilon = epsilon
         self.num_min_distances = num_min_distances
         self.weight_distances = weight_distances
+        self.noise_magnitude = noise_magnitude
 
         if self.dist_eval == "avg_x_min" and (
             self.num_min_distances is None or self.num_min_distances <= 0
@@ -106,7 +111,7 @@ class VoronoiPhantomCellGenerator:
         v1 = np.array(x_vec)
         v2 = np.array(y_vec)
         v3 = np.array(z_vec)
-        noise_magnitude = 0.02
+        noise_magnitude = self.noise_magnitude
 
         supercell_points = []
         # Iterate over the 27 cells in a 3x3x3 grid (-1, 0, 1 in each dimension)
@@ -245,8 +250,12 @@ class VoronoiPhantomCellGenerator:
             supercell_points, x_vec, y_vec, z_vec
         )
 
+        # Distance metric must include periodic images (full supercell), cf. voronoi.py
+        supercell_atomic_numbers = np.tile(atomic_numbers, 27)
         next_point = (
-            self._get_farthest_point(voronoi_vertices, centered_points, atomic_numbers)
+            self._get_farthest_point(
+                voronoi_vertices, supercell_points, supercell_atomic_numbers
+            )
             + center_vector
         )
         return next_point

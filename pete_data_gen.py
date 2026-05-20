@@ -9,16 +9,12 @@ from tqdm import tqdm
 import multiprocessing as mp
 
 import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-import matplotlib.pyplot as plt
 
 from ase import Atoms
 from ase.io import read, write
 from omg.datamodule import DataModule
 from omg.datamodule.dataloader import OMGTorchDataset, OMGData
-from voronoi_weighted import VoronoiPhantomCellGenerator
+from voronoi_weighted_noise import VoronoiPhantomCellGenerator
 
 
 DESIRED_ATOM_COUNT = 20
@@ -98,15 +94,18 @@ def process_single_sample(args):
         return None  # Indicate failure
 
 
+MP20_DIR = Path("./omg-fork/omg/data/mp_20")
+
+
 def load_data():
     train_data = DataModule()
-    train_data.add_from_lmdb("./OMatG/omg/data/mp_20/train.lmdb")
+    train_data.add_from_lmdb(str(MP20_DIR / "train.lmdb"))
 
     val_data = DataModule()
-    val_data.add_from_lmdb("./OMatG/omg/data/mp_20/val.lmdb")
+    val_data.add_from_lmdb(str(MP20_DIR / "val.lmdb"))
 
     test_data = DataModule()
-    test_data.add_from_lmdb("./OMatG/omg/data/mp_20/test.lmdb")
+    test_data.add_from_lmdb(str(MP20_DIR / "test.lmdb"))
 
     assert len(train_data) == 27136
     assert len(val_data) == 9047
@@ -315,4 +314,4 @@ def main(inputs: list[str] | None = None):
 
 
 if __name__ == "__main__":
-    main(inputs=["val", "unweighted_v6"])
+    main()
