@@ -45,6 +45,14 @@ VoronoiGenerator = VoronoiPhantomCellGenerator(
 # => 0.2 jitter
 
 
+def _worker_init():
+    """Run once per worker process: keep numpy/freud single-threaded so N workers
+    don't oversubscribe CPU cores."""
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS"):
+        os.environ.setdefault(var, "1")
+
+
 def process_single_sample(args):
     """Processes a single sample to generate ghost atoms."""
     i, single_data, voronoi_generator_config = args
@@ -215,21 +223,48 @@ def convert_xyz_to_lmdb(input_xyz_file: Path, output_lmdb_file: Path) -> None:
     print(f"Successfully created single-file LMDB: '{output_lmdb_file}'")
 
 
+def save_omgdata_direct_to_lmdb(
+    data: list[OMGData], lmdb_filename: Path
+) -> None:
+    """
+    Write the in-memory ghosted OMGData objects directly to LMDB, skipping the
+    extxyz round-trip used by ``save_atoms_to_lmdb``. Produces the same record
+    format that ``convert_xyz_to_lmdb`` writes:
+        {atomic_numbers, pos, cell, pbc}
+    with ghost atoms encoded as ``-1`` in ``atomic_numbers``.
+    """
+    lmdb_filename.parent.mkdir(parents=True, exist_ok=True)
+    env = lmdb.open(str(lmdb_filename), subdir=False, map_size=int(1e12))
+    with env.begin(write=True) as txn:
+        for i, d in enumerate(data):
+            atomic_numbers = d.species.cpu().numpy().astype(np.int64)
+            value = {
+                "atomic_numbers": torch.from_numpy(atomic_numbers),
+                "pos": d.pos.cpu().to(dtype=torch.float64),
+                "cell": d.cell[0].cpu().to(dtype=torch.float64),
+                "pbc": torch.tensor(
+                    [True, True, True], dtype=torch.bool
+                ),
+            }
+            txn.put(str(i).encode("utf-8"), pickle.dumps(value))
+    env.close()
+    print(f"Wrote {len(data)} structures to {lmdb_filename}")
+
+
 def save_atoms_to_lmdb(
     data: Union[OMGData, list[OMGData]], xyz_filename: Path, lmdb_filename: Path
 ) -> None:
-    """
-    Saves atomic data to a single-file LMDB by first saving to an
-    intermediate EXYZ file and then converting.
+    """Legacy: extxyz round-trip path. Kept for reproducibility / fallback.
+
+    The fast path is :func:`save_omgdata_direct_to_lmdb`, which skips the
+    intermediate extxyz file.
     """
     print(
         f"--- Starting save process from {xyz_filename} to {lmdb_filename}: Atoms -> XYZ -> LMDB ---"
     )
-    # Step 1: Save the data to an EXYZ file
     xyz_saver(data, xyz_filename)
     print(f"Successfully saved intermediate file: '{xyz_filename}'")
 
-    # Step 2: Convert the EXYZ file to an LMDB file
     convert_xyz_to_lmdb(xyz_filename, lmdb_filename)
     print(
         f"--- Save process from {xyz_filename} to {lmdb_filename}: Atoms -> XYZ -> LMDB complete ---"
@@ -237,8 +272,19 @@ def save_atoms_to_lmdb(
 
 
 def ghost_dataset(dataset: OMGTorchDataset, dataset_type: str) -> list[OMGData]:
-    # This list will store all the processed data objects
+    """Generate ghost atoms for every structure in ``dataset``.
+
+    Parallelizes across N worker processes in chunks of N so the original
+    per-sample timeout semantics are preserved (a stuck sample in a chunk does
+    not block the rest of the chunk, which has already been submitted).
+
+    Tunable via env vars:
+      - GHOST_GEN_WORKERS: number of worker processes (default 16)
+      - GHOST_GEN_TIMEOUT: per-sample timeout in seconds (default 20)
+    """
     ghosted_data_list = []
+    n_workers = int(os.environ.get("GHOST_GEN_WORKERS", "16"))
+    sample_timeout = float(os.environ.get("GHOST_GEN_TIMEOUT", "20"))
 
     voronoi_generator_config = {
         "desired_atom_count": VoronoiGenerator.desired_atom_count,
@@ -249,27 +295,46 @@ def ghost_dataset(dataset: OMGTorchDataset, dataset_type: str) -> list[OMGData]:
         "noise_magnitude": VoronoiGenerator.noise_magnitude,
     }
 
-    # Using a single-process pool to robustly handle timeouts
-    with mp.Pool(processes=1) as pool:
+    print(
+        f"Ghosting {dataset_type} dataset with {n_workers} workers "
+        f"(per-sample timeout: {sample_timeout}s)"
+    )
+
+    n_timeouts = 0
+    n_errors = 0
+
+    def _drain(chunk):
+        nonlocal n_timeouts, n_errors
+        for j, fut in chunk:
+            try:
+                processed = fut.get(timeout=sample_timeout)
+                if processed is not None:
+                    ghosted_data_list.append(processed)
+            except mp.TimeoutError:
+                n_timeouts += 1
+                print(f"Skipping sample {j} due to timeout.")
+            except Exception as e:
+                n_errors += 1
+                print(f"Error processing sample {j}: {e}")
+
+    with mp.Pool(processes=n_workers, initializer=_worker_init) as pool:
+        chunk: list = []
         for i, single_data in enumerate(
-            tqdm(dataset, desc=f"Ghosting {dataset_type} dataset")
+            tqdm(dataset, desc=f"Ghosting {dataset_type}")
         ):
             args = (i, single_data, voronoi_generator_config)
-            result = pool.apply_async(process_single_sample, args=(args,))
-
-            try:
-                # Wait for the result with a 20-second timeout
-                processed_data = result.get(timeout=20)
-                if processed_data is not None:
-                    ghosted_data_list.append(processed_data)
-            except mp.TimeoutError:
-                print(f"Skipping sample {i} due to timeout.")
-                # The pool will automatically handle terminating the stuck worker
-            except Exception as e:
-                print(f"Error with multiprocessing for sample {i}: {e}")
+            fut = pool.apply_async(process_single_sample, args=(args,))
+            chunk.append((i, fut))
+            if len(chunk) >= n_workers:
+                _drain(chunk)
+                chunk = []
+        if chunk:
+            _drain(chunk)
 
     print(
-        f"\n✅ Ghost atom generation complete. Total samples processed: {len(ghosted_data_list)}"
+        f"\nGhost atom generation complete. "
+        f"Processed: {len(ghosted_data_list)}, "
+        f"timeouts: {n_timeouts}, errors: {n_errors}"
     )
 
     return ghosted_data_list
@@ -300,13 +365,18 @@ def main(inputs: list[str] | None = None):
         # --- Define File Paths for the full ghosted dataset ---
         run_folder = inputs[1] if inputs else sys.argv[2]
         processed_dir = Path(f"./processed_datasets/{run_folder}")
-        processed_dir.mkdir(exist_ok=True)  # Ensure the directory exists
+        processed_dir.mkdir(parents=True, exist_ok=True)
 
-        full_xyz_filepath = processed_dir / f"{dataset_type}_ghosted.extxyz"
         full_lmdb_filepath = processed_dir / f"{dataset_type}_ghosted.lmdb"
 
-        # --- Execute the full saving pipeline for the new dataset ---
-        save_atoms_to_lmdb(ghosted_data_list, full_xyz_filepath, full_lmdb_filepath)
+        # Fast path: write OMGData directly to LMDB (no extxyz round-trip).
+        # Set GHOST_GEN_WRITE_XYZ=1 to also emit the legacy extxyz file.
+        save_omgdata_direct_to_lmdb(ghosted_data_list, full_lmdb_filepath)
+
+        if os.environ.get("GHOST_GEN_WRITE_XYZ", "0") == "1":
+            xyz_path = processed_dir / f"{dataset_type}_ghosted.extxyz"
+            xyz_saver(ghosted_data_list, xyz_path)
+            print(f"Also wrote extxyz mirror: {xyz_path}")
     finally:
         print("Cleaning up dataset resources...")
         train_dataset.dataset.cleanup()

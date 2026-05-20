@@ -11,11 +11,11 @@
 
 #SBATCH --account=torch_pr_148_general
 #SBATCH --nodes=1
-#SBATCH --time=24:00:00
-#SBATCH --mem=32GB
+#SBATCH --time=8:00:00
+#SBATCH --mem=64GB
 #SBATCH --gres=gpu:0
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=16
 #SBATCH --job-name=ghost-regen-j05
 #SBATCH --output=ghost-regen-j05.out
 
@@ -32,6 +32,10 @@ MP20_DIR=/scratch/kd2862/omatg-ghosted/omg-fork/omg/data/mp_20
 # Name of the new processed_datasets/ subdirectory to write to.
 # Periodicity fix + 0.05 supercell jitter.
 RUN_FOLDER=mp_20_periodic_fix_j05
+
+# Number of parallel ghost-generation workers (one per CPU).
+# Matches --cpus-per-task above.
+GHOST_GEN_WORKERS=16
 
 # ---- Logging -----------------------------------------------------------------
 echo "==== ghost-regen-j05 ===="
@@ -60,7 +64,10 @@ for SPLIT in val test train; do
     singularity exec \
         --overlay "${OVERLAY}":rw \
         "${IMAGE}" \
-        /bin/bash -c "source /ext3/env.sh && cd ${WORKDIR} && MP20_DIR=${MP20_DIR} python pete_data_gen.py ${SPLIT} ${RUN_FOLDER}"
+        /bin/bash -c "source /ext3/env.sh && cd ${WORKDIR} && \
+            MP20_DIR=${MP20_DIR} \
+            GHOST_GEN_WORKERS=${GHOST_GEN_WORKERS} \
+            python pete_data_gen.py ${SPLIT} ${RUN_FOLDER}"
     echo "---- Done split: ${SPLIT} (elapsed ${SECONDS}s) ----"
 done
 
