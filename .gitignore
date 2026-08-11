@@ -9,6 +9,9 @@ __pycache__/
 # LMDB lock files
 *.lmdb-lock
 
+*.xyz
+*.cif
+
 omg-fork/*
 
 PATCHES.md

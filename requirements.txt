@@ -23,7 +23,18 @@ python-dotenv==1.2.1
 pytorch-lightning==2.5.5
 scikit-learn==1.7.2
 scipy==1.16.3
-torch==2.8.0
+# --- PyTorch + PyG native extensions ---
+# PyG native libs (torch_scatter / cluster / sparse / spline_conv) ship ABI
+# wheels keyed by the torch version they were built against. The PyPI build
+# of torch_scatter is tied to torch <= 2.4 and SEGFAULTS against any newer
+# torch (exit 139 or std::length_error on import). To keep `pip install -r
+# requirements.txt` reliable, point at PyG's wheel index for the exact torch
+# version below.
+#
+# Local (this file): macOS / CPU. HPC has its own install path documented in
+# TORCH_HPC_SETUP_GUIDE.md; on HPC use ...torch-2.8.0+cu126.html instead.
+--find-links https://data.pyg.org/whl/torch-2.9.1+cpu.html
+torch==2.9.1
 torch-geometric==2.7.0
 torch_cluster==1.6.3
 torch_scatter==2.1.2
@@ -33,3 +44,8 @@ torchdiffeq==0.2.5
 torchmetrics==1.8.2
 torchsde==0.2.6
 tqdm==4.67.1
+
+# voronoi_demonstration_gifs.py (2D/3D demo animations)
+imageio>=2.34.0
+imageio-ffmpeg>=0.5.0
+pillow>=10.0.0
