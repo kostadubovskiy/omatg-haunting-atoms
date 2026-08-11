@@ -161,6 +161,8 @@ class VoronoiPhantomCellGenerator:
             else:
                 weighted_distances = distances
 
+            if weighted_distances.size == 0:
+                continue
             if self.dist_eval == "min":
                 eval_distance = np.min(weighted_distances)
             elif self.dist_eval == "avg":
@@ -210,7 +212,7 @@ class VoronoiPhantomCellGenerator:
             cells = voro.compute((box, supercell_points)).polytopes
         except Exception as e:
             print(f"Error computing Voronoi vertices: {e}")
-            return np.array([1e-5, 1e-5, 1e-5])
+            return np.array([[1e-5, 1e-5, 1e-5]])
 
         all_vertices = box.wrap(np.concatenate(cells))
         unique_vertices = np.unique(np.round(all_vertices, decimals=10), axis=0)
